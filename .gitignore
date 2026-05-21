@@ -1,0 +1,32 @@
+# Dependencias
+node_modules/
+
+# Variables de entorno
+.env
+
+# Sesiones de WhatsApp
+whatsapp_session/
+
+# Caché de Rettiwt y otros
+.wwebjs_cache/
+
+# Archivos de estado
+last_tweet.json
+
+# Logs
+*.log
+npm-debug.log*
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temporal
+*.tmp
+*.temp
