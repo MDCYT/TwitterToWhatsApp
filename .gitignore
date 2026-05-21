@@ -6,6 +6,7 @@ node_modules/
 
 # Sesiones de WhatsApp
 whatsapp_session/
+!whatsapp_session/.gitkeep
 
 # Caché de Rettiwt y otros
 .wwebjs_cache/

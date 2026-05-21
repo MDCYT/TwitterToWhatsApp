@@ -1,7 +1,9 @@
-import pkg from "whatsapp-web.js";
-const { Client, LocalAuth, MessageMedia } = pkg;
-
-import qrcode from "qrcode-terminal";
+import {
+  makeWASocket,
+  DisconnectReason,
+  useMultiFileAuthState,
+} from "@whiskeysockets/baileys";
+import qrcode from "qrcode";
 import { Rettiwt } from "rettiwt-api";
 import dotenv from "dotenv";
 import { promises as fs } from "fs";
@@ -71,7 +73,6 @@ async function getLatestTweet() {
       return null;
     }
 
-    // Filtrar tweets que tengan fecha de creación válida
     const tweetsWithDate = tweets.list.filter(tweet => tweet.createdAt);
     
     if (tweetsWithDate.length === 0) {
@@ -79,12 +80,10 @@ async function getLatestTweet() {
       return null;
     }
 
-    // Ordenar por fecha de creación (más reciente primero)
     tweetsWithDate.sort((a, b) => {
       return new Date(b.createdAt) - new Date(a.createdAt);
     });
 
-    // Obtener el tweet más reciente por fecha (no por posición)
     const latestTweet = tweetsWithDate[0];
 
     console.log(`Tweet más reciente: ${latestTweet.id} - ${latestTweet.createdAt}`);
@@ -124,34 +123,31 @@ async function formatTweetMessage(tweet) {
   return message;
 }
 
-async function sendMessageToWhatsApp(client, message, attachments = []) {
+async function sendMessageToWhatsApp(sock, message, attachments = []) {
   try {
-    // Si hay links adjuntos, se podrían enviar como media
-    let mediaOptions = [];
-    for (const url of attachments) {
-      try {
-        const media = await MessageMedia.fromUrl(url);
-        mediaOptions.push(media);
-      } catch (e) {
-        console.log("No se pudo cargar media desde URL:", url);
-      }
-    }
-
-    if (mediaOptions.length > 0) {
-      for (const media of mediaOptions) {
-        await client.sendMessage(WHATSAPP_CHANNEL_ID, media, {
-          caption: message,
-        });
+    if (attachments && attachments.length > 0) {
+      for (const url of attachments) {
+        try {
+          const response = await fetch(url);
+          const buffer = Buffer.from(await response.arrayBuffer());
+          await sock.sendMessage(WHATSAPP_CHANNEL_ID, {
+            image: buffer,
+            caption: message,
+          });
+        } catch (e) {
+          console.log("No se pudo cargar media desde URL:", url);
+        }
       }
     } else {
-      await client.sendMessage(WHATSAPP_CHANNEL_ID, message);
+      await sock.sendMessage(WHATSAPP_CHANNEL_ID, { text: message });
     }
     console.log("Mensaje enviado a WhatsApp");
   } catch (error) {
     console.error("Error enviando mensaje:", error.message);
   }
 }
-function startTwitterPolling(client) {
+
+function startTwitterPolling(sock) {
   console.log("Iniciando monitoreo de tweets...");
 
   const pollInterval = setInterval(async () => {
@@ -159,7 +155,7 @@ function startTwitterPolling(client) {
 
     if (tweet) {
       const message = await formatTweetMessage(tweet);
-      await sendMessageToWhatsApp(client, message, tweet?.media?.map((m) => m.url) || []);
+      await sendMessageToWhatsApp(sock, message, tweet?.media?.map((m) => m.url) || []);
       await saveLastTweetId(tweet.id);
     }
   }, 30000);
@@ -167,45 +163,53 @@ function startTwitterPolling(client) {
   console.log(`Monitoreando tweets de @${TWITTER_USER_ID} cada 30 segundos`);
 }
 
-async function initWhatsApp() {
-  const client = new Client({
-    authStrategy: new LocalAuth({
-      dataPath: sessionPath,
-    }),
-    puppeteer: {
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
-    },
+async function connectToWhatsApp() {
+  const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
+
+  const sock = makeWASocket({
+    auth: state,
+    browser: ["Twitter Bot", "Chrome", "120.0.0"],
   });
 
-  // client.sendMessage(WHATSAPP_CHANNEL_ID, '🤖 Bot de Twitter → WhatsApp iniciado! Esperando nuevos tweets...');
+  sock.ev.on("creds.update", saveCreds);
 
-  client.on("qr", (qr) => {
-    console.log("\n=== ESCANEA ESTE CÓDIGO QR CON WHATSAPP ===");
-    qrcode.generate(qr, { small: true });
-    console.log("==========================================\n");
+  sock.ev.on("connection.update", async (update) => {
+    const { connection, lastDisconnect, qr } = update;
+
+    if (qr) {
+      console.log("\n=== ESCANEA ESTE CÓDIGO QR CON WHATSAPP ===");
+      try {
+        const qrCode = await qrcode.toString(qr, { type: "terminal", small: true });
+        console.log(qrCode);
+      } catch (e) {
+        console.log("QR (copia en WhatsApp):", qr);
+      }
+      console.log("==========================================\n");
+    }
+
+    if (connection === "close") {
+      const shouldReconnect =
+        lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+      console.log(
+        "Conexión cerrada. Reconectando...",
+        shouldReconnect ? "" : "(no reconectar)"
+      );
+      if (shouldReconnect) {
+        connectToWhatsApp();
+      }
+    } else if (connection === "open") {
+      console.log("✅ WhatsApp conectado!");
+      startTwitterPolling(sock);
+    }
   });
 
-  client.on("ready", async () => {
-    console.log("✅ WhatsApp conectado!");
-
-    startTwitterPolling(client);
+  sock.ev.on("messages.upsert", (m) => {
+    console.log("Mensaje recibido:", m);
   });
-
-  client.on("auth_failure", (msg) => {
-    console.error("❌ Error de autenticación:", msg);
-    console.log("Borra la carpeta whatsapp_session e intenta de nuevo");
-  });
-
-  client.on("disconnected", (reason) => {
-    console.log("WhatsApp desconectado:", reason);
-  });
-
-  await client.initialize();
 }
 
 async function main() {
-  console.log("🚀 Iniciando bot Twitter → WhatsApp");
+  console.log("🚀 Iniciando bot Twitter → WhatsApp (Baileys)");
   console.log("Usuario Twitter:", TWITTER_USER_ID);
   console.log("Canal WhatsApp:", WHATSAPP_CHANNEL_ID);
 
@@ -220,9 +224,9 @@ async function main() {
   await loadLastTweetId();
   await initTwitter();
 
-  console.log("\nIniciando WhatsApp...");
+  console.log("\nIniciando WhatsApp con Baileys...");
   console.log("Escanea el código QR que aparecerá con tu WhatsApp");
-  await initWhatsApp();
+  await connectToWhatsApp();
 }
 
 main().catch(console.error);
