@@ -158,9 +158,9 @@ function startTwitterPolling(sock) {
       await sendMessageToWhatsApp(sock, message, tweet?.media?.map((m) => m.url) || []);
       await saveLastTweetId(tweet.id);
     }
-  }, 30000);
+  }, 180000);
 
-  console.log(`Monitoreando tweets de @${TWITTER_USER_ID} cada 30 segundos`);
+  console.log(`Monitoreando tweets de @${TWITTER_USER_ID} cada 3 minutos`);
 }
 
 async function connectToWhatsApp() {
